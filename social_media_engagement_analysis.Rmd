@@ -1,0 +1,286 @@
+---
+title: "Social Media Engagement Analysis"
+author: "Brian Taber"
+date: "2026-02-25"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cosmo
+    highlight: tango
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, include=FALSE}
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(plotly)
+library(scales)
+library(stringr)
+library(DT)
+```
+
+```{css, echo=FALSE}
+  pre, .sourceCode {
+  white-space: pre !important;
+  overflow-x: auto !important;
+  word-wrap: normal !important;
+}
+.btn-default.code-folding-btn {
+  background-color: #00CFCC !important;
+  color: #0D0D0D !important;
+  font-weight: bold;
+  border: none;
+  transition: all 0.3s ease;
+}
+.btn-default.code-folding-btn:hover {
+  background-color: #008c8a !important;
+  color: #ffffff !important;
+}
+```
+
+```{r clean_data}
+# 1. Import the data
+raw_social_data <- read_csv("social_media_viral_content_dataset.csv")
+
+# 2. Clean the data
+clean_social_data <- raw_social_data %>%
+  clean_names() %>%
+  distinct() %>%
+  drop_na(views, likes, shares, content_type) %>% 
+  # Adding a calculated column for deep engagement metrics
+  mutate(engagement_rate = (likes + comments + shares) / views)
+
+# 3. Verify
+glimpse(clean_social_data)
+```
+
+```{r analyze_content}
+# 1. Aggregate performance metrics to identify baseline 'Format DNA'
+content_performance <- clean_social_data %>%
+  group_by(content_type) %>%
+  summarize(
+    total_posts = n(),
+    avg_views = mean(views),
+    avg_likes = mean(likes),
+    avg_engagement_rate = mean(engagement_rate),
+    viral_count = sum(is_viral)
+  ) %>%
+  # Calculate what percentage of posts for each format went viral
+  mutate(viral_percentage = (viral_count / total_posts) * 100) %>%
+  mutate(across(where(is.numeric), ~round(., 2))) %>% 
+  # Sort the results from highest engagement rate to lowest
+  arrange(desc(avg_engagement_rate))
+
+# 2. Print the results as a sortable table
+datatable(content_performance,
+          style = 'bootstrap',
+          colnames = c("Format", "Total Posts", "Avg Views", "Avg Likes", "Avg Engagement", "Viral Count", "Viral %"),
+          options = list(
+            dom = 't',
+            ordering = TRUE,
+            paging = FALSE,
+            info = FALSE
+          ),
+          rownames = FALSE
+)
+```
+
+```{r comparison_scatter}
+# 1. Build the base ggplot
+hook_plot <- ggplot(data = content_performance, 
+                    aes(x = viral_percentage, 
+                        y = avg_engagement_rate, 
+                        color = content_type, 
+                        # We use size to make it a "bubble" chart based on how many posts exist
+                        size = total_posts, 
+                        # This text controls what the user sees when they hover their mouse
+                        text = paste("Format:", content_type, 
+                                     "<br>Viral Percentage:", round(viral_percentage, 1), "%",
+                                     "<br>Avg Engagement Rate:", round(avg_engagement_rate, 3)))) +
+  # Add the points (alpha makes them slightly transparent)
+  geom_point(alpha = 0.8) +
+  # Scale the bubbles so they are easy to see, but hide the size legend
+  scale_size(range = c(8, 20), guide = "none") +
+  
+  # Add 15% padding (overscan) to the X and Y axes so bubbles don't clip
+  scale_x_continuous(expand = expansion(mult = 0.15)) +
+  scale_y_continuous(expand = expansion(mult = 0.15)) +
+  
+  # Apply a clean, modern aesthetic
+  theme_minimal() +
+  # Add professional labeling
+  labs(
+    title = "The Virality vs. Engagement Trade-off",
+    x = "Viral Percentage (%)",
+    y = "Average Engagement Rate",
+    color = "Content Format"
+  )
+# 1b. Resolve theme_minimal/ggplotly conflict by forcing legend to bottom for better horizontal pacing
+hook_plot_legend <- hook_plot + theme(legend.position = "bottom")
+
+# 2. Convert the static ggplot into an interactive web widget
+ggplotly(hook_plot_legend, tooltip = "text")
+```
+
+```{r daily_bars}
+# 1. Prep the data: Extract Day of the Week and calculate average engagement
+day_data <- clean_social_data %>%
+  mutate(
+    # Extract the day of the week (Monday, Tuesday, etc.)
+    day_of_week = wday(post_datetime, label = TRUE, abbr = FALSE)
+  ) %>%
+  group_by(day_of_week) %>%
+  summarize(
+    avg_engagement = mean(engagement_rate),
+    total_posts = n()
+  )
+
+# 2. Build the visual
+day_plot <- ggplot(day_data, aes(x = day_of_week, 
+                                 y = avg_engagement, 
+                                 fill = day_of_week,
+                                 text = paste("Day:", day_of_week, 
+                                              "<br>Avg Engagement:", round(avg_engagement, 4),
+                                              "<br>Total Posts:", total_posts))) +
+  # Create a clean bar chart
+  geom_col(show.legend = FALSE, alpha = 0.9) +
+  # Use a sleek, modern color palette (viridis 'mako' looks very premium)
+  scale_fill_viridis_d(option = "mako") +
+  theme_minimal() +
+  labs(
+    title = "Engagement Trends by Day of the Week",
+    subtitle = "Identifying peak traffic days for product launch",
+    x = "",
+    y = "Average Engagement Rate"
+  ) +
+  # Remove the background grid for a cleaner dashboard look
+  theme(
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# 3. Render it as an interactive widget
+ggplotly(day_plot, tooltip = "text")
+```
+
+```{r content_radar}
+# 1. Prep and scale the data (0 to 100)
+radar_format <- clean_social_data %>%
+  group_by(content_type) %>%
+  summarize(
+    Views = mean(views),
+    Likes = mean(likes),
+    Comments = mean(comments),
+    Shares = mean(shares),
+    Engagement = mean(engagement_rate)
+  ) %>%
+  mutate(across(-content_type, ~ rescale(., to = c(0, 100))))
+
+# 2. Extract stats (we add the first stat to the end to close the shape)
+categories <- c("Views", "Likes", "Comments", "Shares", "Engagement", "Views")
+
+video_stats <- c(as.numeric(radar_format[radar_format$content_type == "video", -1]), as.numeric(radar_format[radar_format$content_type == "video", 2]))
+text_stats <- c(as.numeric(radar_format[radar_format$content_type == "text", -1]), as.numeric(radar_format[radar_format$content_type == "text", 2]))
+image_stats <- c(as.numeric(radar_format[radar_format$content_type == "image", -1]), as.numeric(radar_format[radar_format$content_type == "image", 2]))
+
+# 3. Build the plot
+plot_ly(type = 'scatterpolar', fill = 'toself', mode = 'lines+markers') %>%
+  add_trace(r = video_stats, theta = categories, name = 'Video', fillcolor = 'rgba(255, 165, 0, 0.3)', line = list(color = 'darkorange')) %>%
+  add_trace(r = text_stats, theta = categories, name = 'Text', fillcolor = 'rgba(0, 191, 255, 0.3)', line = list(color = 'deepskyblue')) %>%
+  add_trace(r = image_stats, theta = categories, name = 'Image', fillcolor = 'rgba(50, 205, 50, 0.3)', line = list(color = 'limegreen')) %>%
+  layout(polar = list(radialaxis = list(visible = TRUE, range = c(0, 100))), title = "Content Format DNA: Engagement vs. Reach")
+```
+
+```{r matrix_heatmap}
+# 1. Prep the Data: Group by BOTH Platform and Format
+matrix_data <- clean_social_data %>%
+  group_by(platform, content_type) %>%
+  summarize(avg_engagement = mean(engagement_rate), .groups = "drop")
+
+# 2. Build the Heatmap
+heatmap_plot <- ggplot(matrix_data, aes(x = content_type, 
+                                        y = platform, 
+                                        fill = avg_engagement,
+                                        text = paste("Platform:", platform,
+                                                     "<br>Format:", content_type,
+                                                     "<br>Avg Engagement:", round(avg_engagement, 3)))) +
+  # geom_tile creates the grid squares; color = "white" adds a clean border between them
+  geom_tile(color = "white", linewidth = 0.5) +
+  # 'plasma' is a fantastic, high-contrast dark-to-light color scale
+  scale_fill_viridis_c(option = "plasma", name = "Engagement\nRate") +
+  theme_minimal() +
+  labs(
+    title = "The Competitive Landscape: Engagement Hotspots",
+    subtitle = "Identifying market gaps for Kitchenship UX planning",
+    x = "Content Format",
+    y = "" # Leaving Y blank since the platform names speak for themselves
+  ) +
+  # Remove the background grid lines for a flush, premium look
+  theme(
+  panel.grid = element_blank(),
+  axis.text.y = element_text(hjust = 1) 
+)
+
+# 3. Make it interactive
+ggplotly(heatmap_plot, tooltip = "text")
+```
+
+```{r hashtag_bars}
+# 1. Filter for the Kitchenship Target Audience
+kitchenship_cohort <- clean_social_data %>%
+  filter(topic == "Lifestyle", region == "US") %>%
+  # Drop rows where hashtags are missing
+  filter(!is.na(hashtags)) 
+
+# 2. Extract and calculate top hashtags
+top_hashtags <- kitchenship_cohort %>%
+  # Some rows might have "#food #life". This splits them into separate rows so we can count them
+  separate_rows(hashtags, sep = " ") %>%
+  # Clean up the text (remove the '#' symbol and make everything lowercase so #Food and #food match)
+  mutate(clean_tag = str_remove_all(str_to_lower(hashtags), "#")) %>%
+  filter(clean_tag != "") %>% # Remove any blank spaces
+  group_by(clean_tag) %>%
+  summarize(
+    total_uses = n(),
+    avg_engagement = mean(engagement_rate)
+  ) %>%
+  # Only look at tags that have been used a decent amount of times to avoid one-hit wonders
+  filter(total_uses >= 3) %>%
+  arrange(desc(avg_engagement)) %>%
+  head(10) # Grab the top 10
+
+# 3. Build the Visual
+hashtag_plot <- ggplot(top_hashtags, aes(x = reorder(clean_tag, avg_engagement), 
+                                         y = avg_engagement, 
+                                         fill = avg_engagement,
+                                         text = paste("Tag: #", clean_tag,
+                                                      "<br>Uses:", total_uses,
+                                                      "<br>Avg Engagement:", round(avg_engagement, 4)))) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() + # Flips the chart sideways so the words are easy to read
+  scale_fill_viridis_c(option = "magma") +
+  theme_minimal() +
+  labs(
+    title = "Top Hashtags in US Lifestyle Content",
+    subtitle = "Recommended default tags for the Kitchenship upload UI",
+    x = "Hashtag",
+    y = "Average Engagement Rate"
+  )+
+  theme(
+    # Center the title (0.5 is the middle) and make it bold
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    # Center the subtitle as well for a balanced look
+    plot.subtitle = element_text(hjust = 0.5, size = 10, margin = margin(b = 10)),
+    # Clean up the grid
+    panel.grid.major.y = element_blank()
+  )
+
+# 4. Make it interactive
+ggplotly(hashtag_plot, tooltip = "text")
+```
